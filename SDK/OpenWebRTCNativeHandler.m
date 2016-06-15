@@ -25,7 +25,7 @@
 //  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
 //  OF SUCH DAMAGE.
 //
-
+#import "OpenWebRTCLocalAudioSource.h"
 #import "OpenWebRTCNativeHandler.h"
 #import "OpenWebRTCUtils.h"
 
@@ -41,6 +41,7 @@
 #include "owr_video_renderer.h"
 #include "owr_window_registry.h"
 #include "owr_types.h"
+#include "owr_local_media_source.h"
 
 #define SELF_VIEW_TAG "self-view"
 #define REMOTE_VIEW_TAG "remote-view"
@@ -67,7 +68,6 @@ static OpenWebRTCNativeHandler *staticSelf;
 
 @property (nonatomic, strong) NSMutableArray *helperServers;
 @property (nonatomic, strong) NSMutableArray *remoteCandidatesCache;
-@property (nonatomic, strong) NSMutableArray *localSourceArray;
 @property (nonatomic, assign) BOOL isTrickleICEEnabled;
 
 @end
@@ -1152,22 +1152,31 @@ static void got_local_sources(GList *sources)
         OwrMediaType media_type;
         OwrMediaType source_type;
 
+        NSValue *source_value;
+        NSString *media_type_name;
+        
         source = sources->data;
         g_assert(OWR_IS_MEDIA_SOURCE(source));
 
         g_object_get(source, "name", &name, "type", &source_type, "media-type", &media_type, NULL);
 
-        /* We ref the sources because we want them to stay around. On iOS they will never be
-         * unplugged, I expect, but it's safer this way. */
-        g_object_ref(source);
-
-        g_print("[%s/%s] %s\n", media_type == OWR_MEDIA_TYPE_AUDIO ? "audio" : "video",
+        if (media_type == OWR_MEDIA_TYPE_AUDIO) {
+            source_value = [[OpenWebRTCLocalAudioSource alloc] initWithLocalMediaSource:OWR_LOCAL_MEDIA_SOURCE(source)];
+            media_type_name = @"audio";
+        } else {
+            /* We ref the sources because we want them to stay around. On iOS they will never be
+             * unplugged, I expect, but it's safer this way. */
+            g_object_ref(source);
+            source_value = [NSValue valueWithPointer:source];
+            media_type_name = @"video";
+        }
+        g_print("[%s/%s] %s\n", media_type_name,
                 source_type == OWR_SOURCE_TYPE_CAPTURE ? "capture" : source_type == OWR_SOURCE_TYPE_TEST ? "test" : "unknown",
                 name);
 
         [staticSelf.localSourceArray addObject:@{@"name": [NSString stringWithUTF8String:name],
-                                 @"source": [NSValue valueWithPointer:source],
-                                 @"mediaType": media_type == OWR_MEDIA_TYPE_AUDIO ? @"audio" : @"video"
+                                 @"source": source_value,
+                                 @"mediaType": media_type_name
                                  }];
 
         if (!have_video && media_type == OWR_MEDIA_TYPE_VIDEO && source_type == OWR_SOURCE_TYPE_CAPTURE) {

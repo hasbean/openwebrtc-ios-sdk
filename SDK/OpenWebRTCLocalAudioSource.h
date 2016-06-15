@@ -1,7 +1,7 @@
 //
-//  OpenWebRTC.h
+//  OpenWebRTCLocalAudioSource.h
 //
-//  Copyright (c) 2015, Ericsson AB.
+//  Copyright (c) 2016, Ericsson AB.
 //  All rights reserved.
 //
 //  Redistribution and use in source and binary forms, with or without modification,
@@ -26,22 +26,19 @@
 //  OF SUCH DAMAGE.
 //
 
-#import <UIKit/UIKit.h>
+#ifndef OpenWebRTCLocalAudioSource_h
+#define OpenWebRTCLocalAudioSource_h
 
-#import <OpenWebRTC-SDK/OpenWebRTCVideoView.h>
-#import <OpenWebRTC-SDK/OpenWebRTCUtils.h>
-#import <OpenWebRTC-SDK/OpenWebRTCSettings.h>
-#import <OpenWebRTC-SDK/OpenWebRTCNativeHandler.h>
-#import <OpenWebRTC-SDK/OpenWebRTCLocalAudioSource.h>
+typedef struct _OwrLocalMediaSource OwrLocalMediaSource;
 
-#import "owr.h"
+@interface OpenWebRTCLocalAudioSource : NSValue
 
-@interface OpenWebRTC : NSObject
+@property (readonly) const char *objCType;
+@property double volume;
 
-/**
- *  Initializes OpenWebRTC. Should preferably be run inside your AppDelegate's 
- *  initialize method to ensure OpenWebRTC has enough time to set things up.
- */
-+ (void)initOpenWebRTC;
+- (instancetype)initWithLocalMediaSource:(OwrLocalMediaSource *)localMediaSource;
+- (void)getValue:(void *)value;
 
 @end
+
+#endif /* OpenWebRTCLocalAudioSource_h */

@@ -49,6 +49,7 @@
 
 @property (nonatomic, weak) id <OpenWebRTCNativeHandlerDelegate> delegate;
 @property (nonatomic, strong) OpenWebRTCSettings *settings;
+@property (nonatomic, strong) NSMutableArray *localSourceArray;
 
 - (instancetype)initWithDelegate:(id <OpenWebRTCNativeHandlerDelegate>)delegate;
 
