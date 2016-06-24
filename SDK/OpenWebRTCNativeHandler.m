@@ -43,22 +43,22 @@
 #include "owr_types.h"
 #include "owr_local_media_source.h"
 
+#include <gst/gst.h>
+#include <agent.h>
+
+
 #define SELF_VIEW_TAG "self-view"
 #define REMOTE_VIEW_TAG "remote-view"
 
-OwrVideoRenderer *local_video_renderer;
-OwrVideoRenderer *remote_video_renderer;
 
-static GList *local_sources, *renderers;
-static OwrTransportAgent *transport_agent;
+
 static gchar *candidate_types[] = { "host", "srflx", "prflx", "relay", NULL };
 static gchar *tcp_types[] = { "", "active", "passive", "so", NULL };
-static bool is_answering = NO;
-static bool is_offering = NO;
 
-static void got_local_sources(GList *sources);
 
-static OpenWebRTCNativeHandler *staticSelf;
+static void got_local_sources(GList *sources, gpointer user_data);
+
+//static OpenWebRTCNativeHandler *staticSelf;
 
 @interface OpenWebRTCNativeHandler ()
 {
@@ -86,9 +86,12 @@ static OpenWebRTCNativeHandler *staticSelf;
 - (instancetype)initWithDelegate:(id <OpenWebRTCNativeHandlerDelegate>)delegate
 {
     if (self = [super init]) {
-        staticSelf = self;
+        //staticSelf = self;
         _delegate = delegate;
         _settings = [[OpenWebRTCSettings alloc] initWithDefaults];
+        defs.is_answering = false;
+        defs.is_offering = false;
+        
     }
     return self;
 }
@@ -97,9 +100,9 @@ static OpenWebRTCNativeHandler *staticSelf;
 {
     OwrVideoRenderer *renderer;
     if (videoView == _selfView) {
-        renderer = local_video_renderer;
+        renderer = defs.local_video_renderer;
     } else if (videoView == _remoteView) {
-        renderer = remote_video_renderer;
+        renderer = defs.remote_video_renderer;
     } else {
         NSLog(@"WARNING! No OwrVideoRenderer, cannot update rotation");
         return;
@@ -115,9 +118,9 @@ static OpenWebRTCNativeHandler *staticSelf;
 {
     OwrVideoRenderer *renderer;
     if (videoView == _selfView) {
-        renderer = local_video_renderer;
+        renderer = defs.local_video_renderer;
     } else if (videoView == _remoteView) {
-        renderer = remote_video_renderer;
+        renderer = defs.remote_video_renderer;
     } else {
         NSLog(@"WARNING! No OwrVideoRenderer, cannot get proper rotation");
         return 0;
@@ -131,9 +134,9 @@ static OpenWebRTCNativeHandler *staticSelf;
 {
     OwrVideoRenderer *renderer;
     if (videoView == _selfView) {
-        renderer = local_video_renderer;
+        renderer = defs.local_video_renderer;
     } else if (videoView == _remoteView) {
-        renderer = remote_video_renderer;
+        renderer = defs.remote_video_renderer;
     } else {
         NSLog(@"WARNING! No OwrVideoRenderer, update mirrored state");
         return;
@@ -160,13 +163,14 @@ static OpenWebRTCNativeHandler *staticSelf;
 - (void)setRemoteView:(OpenWebRTCVideoView *)remoteView
 {
     _remoteView = remoteView;
-    owr_window_registry_register(owr_window_registry_get(), REMOTE_VIEW_TAG, (__bridge gpointer)(remoteView));
+    const char *t = _viewTag.cString;
+    owr_window_registry_register(owr_window_registry_get(), t, (__bridge gpointer)(remoteView));
 }
 
 - (void)removeRemoteView
 {
     if (_remoteView) {
-        owr_window_registry_unregister(owr_window_registry_get(), REMOTE_VIEW_TAG);
+        owr_window_registry_unregister(owr_window_registry_get(), _viewTag.cString);
         _remoteView = nil;
     }
 }
@@ -196,19 +200,19 @@ static OpenWebRTCNativeHandler *staticSelf;
 
 - (void)initiateCall
 {
-    is_answering = FALSE;
-    is_offering = TRUE;
+    defs.is_answering = FALSE;
+    defs.is_offering = TRUE;
 
-    prepare_media_sessions_for_local_sources(FALSE);
+    prepare_media_sessions_for_local_sources(FALSE, self);
 
-    if (should_send_offer()) {
-        send_offer();
+    if (should_send_offer(self)) {
+        send_offer(self);
     }
 }
 
 - (void)terminateCall
 {
-    reset();
+    reset(self);
 }
 
 - (void)handleAnswerReceived:(NSDictionary *)answer
@@ -235,7 +239,7 @@ static OpenWebRTCNativeHandler *staticSelf;
     GList *media_sessions, *item;
 
     // Get the existing media sessions.
-    media_sessions = g_object_get_data(G_OBJECT(transport_agent), "media-sessions");
+    media_sessions = g_object_get_data(G_OBJECT(defs.transport_agent), "media-sessions");
     int i = 0;
     for (item = media_sessions; item; item = item->next) {
         media_session = OWR_MEDIA_SESSION(item->data);
@@ -252,7 +256,7 @@ static OpenWebRTCNativeHandler *staticSelf;
         NSArray *payloads = mediaDescription[@"payloads"];
         codec_type = OWR_CODEC_TYPE_NONE;
 
-        OpenWebRTCSettings *settings = staticSelf.settings;
+        OpenWebRTCSettings *settings = self.settings;
 
         for (int j = 0; j < [payloads count] && codec_type == OWR_CODEC_TYPE_NONE; j++) {
             NSDictionary *payload = payloads[j];
@@ -358,14 +362,14 @@ static OpenWebRTCNativeHandler *staticSelf;
 
 - (void)handleOfferReceived:(NSDictionary *)offer
 {
-    is_answering = TRUE;
-    is_offering = FALSE;
+    defs.is_answering = TRUE;
+    defs.is_offering = FALSE;
 
     NSDictionary *sdp = offer[@"sessionDescription"];
     if (!sdp)
         sdp = [OpenWebRTCUtils parseSDPFromString:offer[@"sdp"]];
 
-    NSLog(@"Offer SDP: %@", sdp);
+    //NSLog(@"Offer SDP: %@", sdp);
 
     const gchar *mtype;
     OwrMediaType media_type = OWR_MEDIA_TYPE_UNKNOWN;
@@ -398,7 +402,7 @@ static OpenWebRTCNativeHandler *staticSelf;
         NSArray *payloads = mediaDescription[@"payloads"];
         codec_type = OWR_CODEC_TYPE_NONE;
 
-        OpenWebRTCSettings *settings = staticSelf.settings;
+        OpenWebRTCSettings *settings = self.settings;
 
         for (int j = 0; j < [payloads count] && codec_type == OWR_CODEC_TYPE_NONE; j++) {
             NSDictionary *payload = payloads[j];
@@ -487,25 +491,25 @@ static OpenWebRTCNativeHandler *staticSelf;
             }
         }
 
-        g_signal_connect(media_session, "on-incoming-source", G_CALLBACK(got_remote_source), NULL);
-        g_signal_connect(media_session, "on-new-candidate", G_CALLBACK(got_candidate), NULL);
-        g_signal_connect(media_session, "on-candidate-gathering-done", G_CALLBACK(candidate_gathering_done), NULL);
-        g_signal_connect(media_session, "notify::dtls-certificate", G_CALLBACK(got_dtls_certificate), NULL);
+        g_signal_connect(media_session, "on-incoming-source", G_CALLBACK(got_remote_source), (__bridge void*)  self);
+        g_signal_connect(media_session, "on-new-candidate", G_CALLBACK(got_candidate),(__bridge void*)   self);
+        g_signal_connect(media_session, "on-candidate-gathering-done", G_CALLBACK(candidate_gathering_done),(__bridge void*)   self);
+        g_signal_connect(media_session, "notify::dtls-certificate", G_CALLBACK(got_dtls_certificate), (__bridge void*)  self);
 
-        for (list_item = local_sources; list_item; list_item = list_item->next) {
+        for (list_item = defs.local_sources; list_item; list_item = list_item->next) {
             source = OWR_MEDIA_SOURCE(list_item->data);
             g_object_get(source, "media-type", &source_media_type, NULL);
             if (source_media_type == media_type) {
-                local_sources = g_list_remove(local_sources, source);
+                defs.local_sources = g_list_remove(defs.local_sources, source);
                 owr_media_session_set_send_source(media_session, source);
                 break;
             }
         }
-        media_sessions = g_object_get_data(G_OBJECT(transport_agent), "media-sessions");
+        media_sessions = g_object_get_data(G_OBJECT(defs.transport_agent), "media-sessions");
         media_sessions = g_list_append(media_sessions, media_session);
-        g_object_set_data(G_OBJECT(transport_agent), "media-sessions", media_sessions);
+        g_object_set_data(G_OBJECT(defs.transport_agent), "media-sessions", media_sessions);
         // This triggers local candidate gatehering.
-        owr_transport_agent_add_session(transport_agent, OWR_SESSION(media_session));
+        owr_transport_agent_add_session(defs.transport_agent, OWR_SESSION(media_session));
     }
 }
 
@@ -584,7 +588,7 @@ static OpenWebRTCNativeHandler *staticSelf;
 
         index = [remoteCandidate[@"sdpMLineIndex"] intValue];
 
-        media_sessions = g_object_get_data(G_OBJECT(transport_agent), "media-sessions");
+        media_sessions = g_object_get_data(G_OBJECT(defs.transport_agent), "media-sessions");
         media_session = OWR_MEDIA_SESSION(g_list_nth_data(media_sessions, index));
 
         if (!media_session) {
@@ -629,7 +633,7 @@ static OpenWebRTCNativeHandler *staticSelf;
         types = OWR_MEDIA_TYPE_UNKNOWN;
     }
 
-    owr_get_capture_sources(types, (OwrCaptureSourcesCallback)got_local_sources, NULL);
+    owr_get_capture_sources(types, (OwrCaptureSourcesCallback)got_local_sources, (__bridge gpointer)(self));
 }
 
 #pragma mark - C stuff
@@ -642,7 +646,8 @@ static void got_remote_source(OwrMediaSession *media_session, OwrMediaSource *so
     OwrMediaRenderer *renderer;
 
     g_return_if_fail(OWR_IS_MEDIA_SESSION(media_session));
-    g_return_if_fail(!user_data);
+    //g_return_if_fail(!user_data);
+    OpenWebRTCNativeHandler* handler = (__bridge OpenWebRTCNativeHandler*) user_data;
 
     g_object_get(source, "media-type", &media_type, "name", &name, NULL);
     g_message("Got remote source: %s", name);
@@ -650,31 +655,34 @@ static void got_remote_source(OwrMediaSession *media_session, OwrMediaSource *so
     if (media_type == OWR_MEDIA_TYPE_AUDIO) {
         renderer = OWR_MEDIA_RENDERER(owr_audio_renderer_new());
     } else if (media_type == OWR_MEDIA_TYPE_VIDEO) {
-        renderer = OWR_MEDIA_RENDERER(owr_video_renderer_new(REMOTE_VIEW_TAG));
-        remote_video_renderer = (OwrVideoRenderer *)renderer;
+        renderer = OWR_MEDIA_RENDERER(owr_video_renderer_new(handler.viewTag.cString));
+        handler->defs.remote_video_renderer = (OwrVideoRenderer *)renderer;
     } else {
         g_return_if_reached();
     }
 
     owr_media_renderer_set_source(renderer, source);
-    renderers = g_list_append(renderers, renderer);
+    handler->defs.renderers = g_list_append(handler->defs.renderers, renderer);
 
-    if (staticSelf.delegate) {
+    if (handler.delegate) {
         NSDictionary *remoteSource = @{@"name": [NSString stringWithUTF8String:name],
                                        @"source": [NSValue valueWithPointer:source],
                                        @"mediaType": media_type == OWR_MEDIA_TYPE_AUDIO ? @"audio" : @"video"
                                        };
-        [staticSelf.delegate gotRemoteSource:remoteSource];
+        [handler.delegate gotRemoteSource:remoteSource];
     }
 }
 
-static gboolean can_send_answer()
+static gboolean can_send_answer(OpenWebRTCNativeHandler* handler)
 {
     NSLog(@">>>>>>>>>>>>>>>>>>>>>>>>>> can_send_answer");
     GObject *media_session;
     GList *media_sessions, *item;
 
-    media_sessions = g_object_get_data(G_OBJECT(transport_agent), "media-sessions");
+    media_sessions = g_object_get_data(G_OBJECT(handler->defs.transport_agent), "media-sessions");
+    
+    NSLog(@"GLIST size!  %i", g_list_length(media_sessions));
+    
     for (item = media_sessions; item; item = item->next) {
         NSLog(@">>>>>>>>>>>>>>>>>>>>>>>>>> can_send_answer????");
         media_session = G_OBJECT(item->data);
@@ -689,23 +697,23 @@ static gboolean can_send_answer()
     return TRUE;
 }
 
-static gboolean should_send_offer()
+static gboolean should_send_offer(OpenWebRTCNativeHandler* handler)
 {
-    return is_offering && can_send_offer();
+    return handler->defs.is_offering && can_send_offer(handler);
 }
 
-static gboolean should_send_answer()
+static gboolean should_send_answer(OpenWebRTCNativeHandler* handler)
 {
-    return is_answering && can_send_answer();
+    return handler->defs.is_answering && can_send_answer(handler);
 }
 
-static gboolean can_send_offer()
+static gboolean can_send_offer(OpenWebRTCNativeHandler* handler)
 {
     NSLog(@">>>>>>>>>>>>>>>>>>>>>>>>>> can_send_offer");
     GObject *media_session;
     GList *media_sessions, *item;
 
-    media_sessions = g_object_get_data(G_OBJECT(transport_agent), "media-sessions");
+    media_sessions = g_object_get_data(G_OBJECT(handler->defs.transport_agent), "media-sessions");
     for (item = media_sessions; item; item = item->next) {
         NSLog(@">>>>>>>>>>>>>>>>>>>>>>>>>> can_send_offer????");
         media_session = G_OBJECT(item->data);
@@ -728,7 +736,10 @@ static void got_candidate(GObject *media_session, OwrCandidate *candidate, gpoin
 {
     NSLog(@">>>>>>>>>>>>>>>>>>>>>>>>>> Got local candidate");
     GList *local_candidates;
-    g_return_if_fail(!user_data);
+    
+    OpenWebRTCNativeHandler* handler = (__bridge OpenWebRTCNativeHandler*) user_data;
+    
+    //g_return_if_fail(!user_data);
 
     local_candidates = g_object_get_data(media_session, "local-candidates");
     local_candidates = g_list_append(local_candidates, candidate);
@@ -763,22 +774,24 @@ static void got_candidate(GObject *media_session, OwrCandidate *candidate, gpoin
     g_free(address);
     g_free(related_address);
 
-    if (staticSelf.delegate) {
-        [staticSelf.delegate candidateGenerate:candidateString];
+    if (handler.delegate) {
+        [handler.delegate candidateGenerate:candidateString];
     }
 }
 
 static void candidate_gathering_done(GObject *media_session, gpointer user_data)
 {
-    g_return_if_fail(!user_data);
+    //g_return_if_fail(!user_data);
+    
     g_object_set_data(media_session, "gathering-done", GUINT_TO_POINTER(1));
+    OpenWebRTCNativeHandler* handler = (__bridge OpenWebRTCNativeHandler*) user_data;
 
     NSLog(@"############################# candidate_gathering_done");
 
-    if (should_send_answer()) {
-        send_answer();
-    } else if (should_send_offer()) {
-        send_offer();
+    if (should_send_answer(handler)) {
+        send_answer(handler);
+    } else if (should_send_offer(handler)) {
+        send_offer(handler);
     }
 }
 
@@ -799,7 +812,10 @@ static void got_dtls_certificate(GObject *media_session, GParamSpec *pspec, gpoi
     GString *fingerprint;
 
     g_return_if_fail(G_IS_PARAM_SPEC(pspec));
-    g_return_if_fail(!user_data);
+    //g_return_if_fail(!user_data);
+    OpenWebRTCNativeHandler* handler = (__bridge OpenWebRTCNativeHandler*) user_data;
+
+    
 
     g_object_get(media_session, "dtls-certificate", &pem, NULL);
     der = tmp = g_new0(guchar, (strlen(pem) / 4) * 3 + 3);
@@ -828,34 +844,34 @@ static void got_dtls_certificate(GObject *media_session, GParamSpec *pspec, gpoi
     g_free(der);
     g_strfreev(lines);
 
-    if (should_send_answer()) {
-        send_answer();
-    } else if (should_send_offer()) {
-        send_offer();
+    if (should_send_answer(handler)) {
+        send_answer(handler);
+    } else if (should_send_offer(handler)) {
+        send_offer(handler);
     }
 }
 
-static void send_answer()
+static void send_answer(OpenWebRTCNativeHandler* handler)
 {
-    NSString *sdpString = [OpenWebRTCNativeHandler generateAnswerSDP];
+    NSString *sdpString = [handler generateAnswerSDP];
     NSDictionary *answer = @{@"sdp": sdpString, @"type": @"answer"};
 
-    if (staticSelf.delegate) {
-        [staticSelf.delegate answerGenerated:answer];
+    if (handler.delegate) {
+        [handler.delegate answerGenerated:answer];
     }
 }
 
-static void send_offer()
+static void send_offer(OpenWebRTCNativeHandler* handler)
 {
-    NSString *sdpString = [OpenWebRTCNativeHandler generateOfferSDP];
+    NSString *sdpString = [handler generateOfferSDP];
     NSDictionary *offer = @{@"sdp": sdpString, @"type": @"offer"};
 
-    if (staticSelf.delegate) {
-        [staticSelf.delegate offerGenerated:offer];
+    if (handler.delegate) {
+        [handler.delegate offerGenerated:offer];
     }
 }
 
-+ (NSString *)generateAnswerSDP
+- (NSString *)generateAnswerSDP
 {
     GList *media_sessions, *item;
     GObject *media_session;
@@ -870,7 +886,7 @@ static void send_offer()
 
     NSMutableDictionary *sdp = [NSMutableDictionary dictionary];
 
-    media_sessions = g_object_get_data(G_OBJECT(transport_agent), "media-sessions");
+    media_sessions = g_object_get_data(G_OBJECT(defs.transport_agent), "media-sessions");
 
     NSMutableArray *mediaDescriptions = [NSMutableArray array];
 
@@ -991,7 +1007,7 @@ static void send_offer()
     return [OpenWebRTCUtils generateSDPFromObject:sdp];
 }
 
-+ (NSString *)generateOfferSDP
+- (NSString *)generateOfferSDP
 {
     GList *media_sessions, *item;
     GObject *media_session;
@@ -1004,7 +1020,7 @@ static void send_offer()
 
     NSMutableDictionary *sdp = [NSMutableDictionary dictionary];
 
-    media_sessions = g_object_get_data(G_OBJECT(transport_agent), "media-sessions");
+    media_sessions = g_object_get_data(G_OBJECT(defs.transport_agent), "media-sessions");
 
     NSMutableArray *mediaDescriptions = [NSMutableArray array];
 
@@ -1068,7 +1084,7 @@ static void send_offer()
         g_list_free(candidates);
 
         ice[@"candidates"] = candidatesArray;
-        ice[@"iceOptions"] = @{@"trickle":[NSNumber numberWithBool:staticSelf.isTrickleICEEnabled]};
+        ice[@"iceOptions"] = @{@"trickle":[NSNumber numberWithBool: false]}; //staticSelf.isTrickleICEEnabled
         mediaDescription[@"ice"] = ice;
 
         NSMutableDictionary *dtls = [NSMutableDictionary dictionary];
@@ -1092,49 +1108,250 @@ static void send_offer()
 }
 
 
-static void reset()
+
+
+
+//BEG OVERWRITTEN STUFF
+
+typedef struct {
+    GHashTable *table;
+    GMutex mutex;
+} OwrMessageOriginBusSet;
+
+typedef struct {
+    guintptr window_handle;
+    gboolean window_handle_set;
+    
+    OwrVideoRenderer *renderer; /* weak reference */
+} WindowHandleData;
+
+struct _OwrVideoRendererPrivate {
+    guint width;
+    guint height;
+    gdouble max_framerate;
+    gint rotation;
+    gboolean mirror;
+    gchar *tag;
+};
+
+struct _OwrWindowRegistryPrivate {
+    GHashTable *registry_hash_table;
+    OwrMessageOriginBusSet *message_origin_bus_set;
+};
+
+struct _OwrTransportAgentPrivate {
+    NiceAgent *nice_agent;
+    gboolean ice_controlling_mode;
+    
+    GMutex sessions_lock;
+    GHashTable *sessions;
+    GHashTable *pending_sessions;
+    guint agent_id;
+    gchar *transport_bin_name;
+    GstElement *pipeline, *transport_bin;
+    GstElement *rtpbin;
+    
+    /* session_id -> struct SendBinInfo */
+    GHashTable *send_bins;
+    
+    gboolean local_address_added;
+    
+    GHashTable *streams;
+    GList *rtcp_list;
+    GMutex rtcp_lock;
+    
+    guint local_min_port;
+    guint local_max_port;
+    
+    guint deferred_helper_server_adds;
+    GList *helper_server_infos;
+    
+    GHashTable *data_channels;
+    GRWLock data_channels_rw_mutex;
+    gboolean data_session_added, data_session_established;
+    OwrMessageOriginBusSet *message_origin_bus_set;
+};
+
+struct _OwrMediaSessionPrivate {
+    gboolean rtcp_mux;
+    gchar *incoming_srtp_key;
+    gchar *outgoing_srtp_key;
+    guint send_ssrc;
+    gchar *cname;
+    GRWLock rw_lock;
+    OwrPayload *send_payload;
+    OwrMediaSource *send_source;
+    GPtrArray *receive_payloads;
+    GClosure *on_send_payload;
+    GClosure *on_send_source;
+    GSList *remote_sources;
+    GMutex remote_source_lock;
+    gint jitter_buffer_latency;
+};
+
+
+void _owr_window_registry_unregister_renderer_OVERWRITTEN(OwrWindowRegistry *window_registry,
+                                                          const gchar *tag, OwrVideoRenderer *video_renderer) {
+    OwrWindowRegistryPrivate *priv;
+    WindowHandleData *data;
+    
+    g_return_if_fail(OWR_IS_WINDOW_REGISTRY(window_registry));
+    g_return_if_fail(OWR_IS_VIDEO_RENDERER(video_renderer));
+    
+    priv = window_registry->priv;
+    
+    data = g_hash_table_lookup(priv->registry_hash_table, tag);
+    g_return_if_fail(data);
+    g_return_if_fail(data->renderer == video_renderer);
+    
+    data->renderer = NULL;
+    if (!data->window_handle_set)
+        g_hash_table_remove(priv->registry_hash_table, tag);
+}
+
+static void owr_video_renderer_finalize_OVERWRITTEN(GObject *object) {
+    OwrVideoRenderer *renderer = OWR_VIDEO_RENDERER(object);
+    OwrVideoRendererPrivate *priv = renderer->priv;
+    
+    if (priv->tag) {
+        if(OWR_IS_VIDEO_RENDERER(renderer)){
+            _owr_window_registry_unregister_renderer_OVERWRITTEN(owr_window_registry_get(), priv->tag, renderer);
+        }
+        g_free(priv->tag);
+        priv->tag = NULL;
+    }
+    
+    //G_OBJECT_CLASS(owr_video_renderer_parent_class)->finalize(object);
+}
+
+static guint get_stream_id(OwrTransportAgent *transport_agent, OwrSession *session)
 {
+    GHashTableIter iter;
+    OwrSession *s;
+    gpointer stream_id = GUINT_TO_POINTER(0);
+    
+    g_mutex_lock(&transport_agent->priv->sessions_lock);
+    g_hash_table_iter_init(&iter, transport_agent->priv->sessions);
+    while (g_hash_table_iter_next(&iter, &stream_id, (gpointer)&s)) {
+        if (s == session) {
+            g_mutex_unlock(&transport_agent->priv->sessions_lock);
+            return GPOINTER_TO_UINT(stream_id);
+        }
+    }
+    g_mutex_unlock(&transport_agent->priv->sessions_lock);
+    
+    g_warn_if_reached();
+    return 0;
+}
+
+
+OwrMediaSource * _owr_media_session_get_send_source_OVERWRITTEN(OwrMediaSession *media_session)
+{
+    OwrMediaSource *source;
+    
+    g_return_val_if_fail(OWR_IS_MEDIA_SESSION(media_session), NULL);
+    
+    g_rw_lock_reader_lock(&media_session->priv->rw_lock);
+    source = media_session->priv->send_source;
+    if (source)
+        g_object_ref(source);
+    g_rw_lock_reader_unlock(&media_session->priv->rw_lock);
+    
+    return source;
+}
+
+
+//END OVERWRITTEN STUFF
+
+
+
+static void reset(OpenWebRTCNativeHandler* handler) {
     GList *media_sessions, *item;
     OwrMediaRenderer *renderer;
     OwrMediaSession *media_session;
-
-    is_offering = FALSE;
-    is_answering = FALSE;
-
-    if (renderers) {
-        for (item = renderers; item; item = item->next) {
-            renderer = OWR_MEDIA_RENDERER(item->data);
-            owr_media_renderer_set_source(renderer, NULL);
-        }
-        g_list_free_full(renderers, g_object_unref);
-        renderers = NULL;
-    }
-
-    if (transport_agent) {
-        media_sessions = g_object_steal_data(G_OBJECT(transport_agent), "media-sessions");
+    
+    handler->defs.is_offering = FALSE;
+    handler->defs.is_answering = FALSE;
+    
+    OwrMediaType media_type;
+    guint stream_id;
+    
+    if (handler->defs.transport_agent) {
+        media_sessions = g_object_steal_data(G_OBJECT(handler->defs.transport_agent), "media-sessions");
         for (item = media_sessions; item; item = item->next) {
             media_session = OWR_MEDIA_SESSION(item->data);
-            owr_media_session_set_send_source(media_session, NULL);
+            
+            OwrMediaSource *media_source = _owr_media_session_get_send_source_OVERWRITTEN(media_session);
+            
+            stream_id = get_stream_id(handler->defs.transport_agent, OWR_SESSION(media_session));
+            
+            g_object_get(media_source, "media-type", &media_type, NULL);
+            g_warn_if_fail(media_type != OWR_MEDIA_TYPE_UNKNOWN);
+            
+            gchar *pad_name;
+            if (media_type == OWR_MEDIA_TYPE_VIDEO) {
+                pad_name = g_strdup_printf("video_sink_%u_%u", OWR_CODEC_TYPE_NONE, stream_id);
+            }
+            else {
+                pad_name = g_strdup_printf("audio_raw_sink_%u", stream_id);
+            }
+            
+            printf("Freeing %s\n", pad_name);
+            GstPad *sinkpad = gst_element_get_static_pad(handler->defs.transport_agent->priv->transport_bin, pad_name);
+            g_free(pad_name);
+            
+            //FIXED Error: ERROR:owr_transport_agent.c:917:remove_existing_send_source_and_payload: assertion failed: (sinkpad)
+            //@see https://github.com/EricssonResearch/openwebrtc/issues/574
+            g_warn_if_fail(sinkpad != NULL);
+            if (sinkpad != NULL) {
+                owr_media_session_set_send_source(media_session, NULL);
+            }
         }
         g_list_free(media_sessions);
-        g_object_unref(transport_agent);
-        transport_agent = NULL;
+        g_object_unref(handler->defs.transport_agent);
+        handler->defs.transport_agent = NULL;
     }
-
-    g_list_free(local_sources);
-    local_sources = NULL;
-    local_video_renderer = NULL;
-    remote_video_renderer = NULL;
-    staticSelf.localSourceArray = [NSMutableArray array];
+    
+    //it's important to destroy renderers after the transportagent
+    if (handler->defs.renderers) {
+        for (item = handler->defs.renderers; item; item = item->next) {
+            renderer = OWR_MEDIA_RENDERER(item->data);
+            if (OWR_IS_VIDEO_RENDERER(renderer)) {
+                //ERROR Fix: Hanging up issue and continue renderering in further calls:
+                //@see: https://github.com/EricssonResearch/openwebrtc-examples/issues/128
+                owr_video_renderer_finalize_OVERWRITTEN(renderer);
+                owr_media_renderer_set_source(renderer, NULL);
+            }
+            else {
+                owr_media_renderer_set_source(renderer, NULL);
+            }
+            owr_media_renderer_set_source(renderer, NULL);
+        }
+        g_list_free_full(handler->defs.renderers, g_object_unref);
+        handler->defs.renderers = NULL;
+    }
+    
+    
+    g_list_free(handler->defs.local_sources);
+    handler->defs.local_sources = NULL;
+    handler->defs.local_video_renderer = NULL;
+    handler->defs.remote_video_renderer = NULL;
+    handler.localSourceArray = [NSMutableArray array];
+    //owr_get_capture_sources(OWR_MEDIA_TYPE_AUDIO | OWR_MEDIA_TYPE_VIDEO, (OwrCaptureSourcesCallback) got_local_sources, NULL);
 }
 
-static void got_local_sources(GList *sources)
-{
-    local_sources = g_list_copy(sources);
-    transport_agent = owr_transport_agent_new(FALSE);
 
-    for (NSDictionary *server in staticSelf.helperServers) {
-        owr_transport_agent_add_helper_server(transport_agent,
+
+static void got_local_sources(GList *sources, gpointer user_data)
+{
+    OpenWebRTCNativeHandler* handler = (__bridge OpenWebRTCNativeHandler*) user_data;
+    handler->defs.local_sources = g_list_copy(sources);
+    handler->defs.transport_agent = owr_transport_agent_new(FALSE);
+
+
+    
+    for (NSDictionary *server in handler.helperServers) {
+        owr_transport_agent_add_helper_server(handler->defs.transport_agent,
                                               (OwrHelperServerType)[server[@"type"] intValue],
                                               [server[@"address"] UTF8String],
                                               [server[@"port"] intValue],
@@ -1144,7 +1361,7 @@ static void got_local_sources(GList *sources)
 
     gboolean have_video = FALSE;
 
-    staticSelf.localSourceArray = [NSMutableArray array];
+    handler.localSourceArray = [NSMutableArray array];
 
     while (sources) {
         gchar *name;
@@ -1174,35 +1391,35 @@ static void got_local_sources(GList *sources)
                 source_type == OWR_SOURCE_TYPE_CAPTURE ? "capture" : source_type == OWR_SOURCE_TYPE_TEST ? "test" : "unknown",
                 name);
 
-        [staticSelf.localSourceArray addObject:@{@"name": [NSString stringWithUTF8String:name],
+        [handler.localSourceArray addObject:@{@"name": [NSString stringWithUTF8String:name],
                                  @"source": source_value,
                                  @"mediaType": media_type_name
                                  }];
 
         if (!have_video && media_type == OWR_MEDIA_TYPE_VIDEO && source_type == OWR_SOURCE_TYPE_CAPTURE) {
-            local_video_renderer = owr_video_renderer_new(SELF_VIEW_TAG);
-            g_assert(local_video_renderer);
+            handler->defs.local_video_renderer = owr_video_renderer_new(SELF_VIEW_TAG);
+            g_assert(handler->defs.local_video_renderer);
 
-            OpenWebRTCSettings *settings = staticSelf.settings;
-            g_object_set(local_video_renderer, "width", settings.videoWidth, "height", settings.videoHeight, "max-framerate", settings.videoFramerate, NULL);
+            OpenWebRTCSettings *settings = handler.settings;
+            g_object_set(handler->defs.local_video_renderer, "width", settings.videoWidth, "height", settings.videoHeight, "max-framerate", settings.videoFramerate, NULL);
 
-            renderers = g_list_append(renderers, local_video_renderer);
-            owr_media_renderer_set_source(OWR_MEDIA_RENDERER(local_video_renderer), source);
+            handler->defs.renderers = g_list_append(handler->defs.renderers, handler->defs.local_video_renderer);
+            owr_media_renderer_set_source(OWR_MEDIA_RENDERER(handler->defs.local_video_renderer), source);
             have_video = TRUE;
         }
         sources = sources->next;
     }
 
-    if (staticSelf.delegate) {
-        [staticSelf.delegate gotLocalSources:staticSelf.localSourceArray];
+    if (handler.delegate) {
+        [handler.delegate gotLocalSources:handler.localSourceArray];
     }
 
     // Handle cached remote candidates.
-    @synchronized (staticSelf.remoteCandidatesCache) {
-        [staticSelf.remoteCandidatesCache enumerateObjectsUsingBlock:^(NSDictionary *candidate, NSUInteger idx, BOOL *stop) {
-            [staticSelf handleRemoteCandidateReceived:candidate];
+    @synchronized (handler.remoteCandidatesCache) {
+        [handler.remoteCandidatesCache enumerateObjectsUsingBlock:^(NSDictionary *candidate, NSUInteger idx, BOOL *stop) {
+            [handler handleRemoteCandidateReceived:candidate];
         }];
-        [staticSelf.remoteCandidatesCache removeAllObjects];
+        [handler.remoteCandidatesCache removeAllObjects];
     }
 }
 
@@ -1212,34 +1429,34 @@ static void got_local_sources(GList *sources)
         if ([name isEqualToString:localSource[@"name"]]) {
             OwrMediaSource *source = [localSource[@"source"] pointerValue];
             NSLog(@"[OpenWebRTCNativeHandler] Switching to local source %@ : %p", localSource[@"name"], source);
-            owr_media_renderer_set_source(OWR_MEDIA_RENDERER(local_video_renderer), source);
+            owr_media_renderer_set_source(OWR_MEDIA_RENDERER(defs.local_video_renderer), source);
             return;
         }
     }
     NSLog(@"[OpenWebRTCNativeHandler] WARNING! Could not find source with name %@", name);
 }
 
-void prepare_media_sessions_for_local_sources(bool is_dtls_client)
+void prepare_media_sessions_for_local_sources(bool is_dtls_client, OpenWebRTCNativeHandler * handler)
 {
     gchar *name;
     OwrMediaSource *source = NULL;
     OwrMediaType media_type;
     gboolean have_video = FALSE;
 
-    while (local_sources) {
-        source = local_sources->data;
+    while (handler->defs.local_sources) {
+        source = handler->defs.local_sources->data;
         g_assert(OWR_IS_MEDIA_SOURCE(source));
 
         g_object_get(source, "name", &name, "media-type", &media_type, NULL);
 
         if (!have_video && media_type == OWR_MEDIA_TYPE_VIDEO) {
-            prepare_media_session_for_source(source, media_type, is_dtls_client);
+            prepare_media_session_for_source(source, media_type, is_dtls_client, handler);
             have_video = TRUE;
         } else if (media_type == OWR_MEDIA_TYPE_AUDIO) {
-            prepare_media_session_for_source(source, media_type, is_dtls_client);
+            prepare_media_session_for_source(source, media_type, is_dtls_client, handler);
         }
 
-        local_sources = local_sources->next;
+        handler->defs.local_sources = handler->defs.local_sources->next;
     }
 }
 
@@ -1262,7 +1479,7 @@ void prepare_media_sessions_for_local_sources(bool is_dtls_client)
     return defaultPayloads;
 }
 
-static void prepare_media_session_for_source(OwrMediaSource *source, OwrMediaType media_type, bool is_dtls_client)
+static void prepare_media_session_for_source(OwrMediaSource *source, OwrMediaType media_type, bool is_dtls_client, OpenWebRTCNativeHandler * handler)
 {
     OwrMediaSession *media_session;
     GObject *session;
@@ -1277,7 +1494,7 @@ static void prepare_media_session_for_source(OwrMediaSource *source, OwrMediaTyp
     g_object_set(media_session, "rtcp-mux", 1, NULL);
     codec_type = OWR_CODEC_TYPE_NONE;
 
-    OpenWebRTCSettings *settings = staticSelf.settings;
+    OpenWebRTCSettings *settings = handler.settings;
 
     NSString *encodingName;
     int payloadType;
@@ -1338,16 +1555,16 @@ static void prepare_media_session_for_source(OwrMediaSource *source, OwrMediaTyp
         owr_media_session_add_receive_payload(media_session, send_payload);
     }
 
-    g_signal_connect(media_session, "on-incoming-source", G_CALLBACK(got_remote_source), NULL);
-    g_signal_connect(media_session, "on-new-candidate", G_CALLBACK(got_candidate), NULL);
-    g_signal_connect(media_session, "on-candidate-gathering-done", G_CALLBACK(candidate_gathering_done), NULL);
-    g_signal_connect(media_session, "notify::dtls-certificate", G_CALLBACK(got_dtls_certificate), NULL);
+    g_signal_connect(media_session, "on-incoming-source", G_CALLBACK(got_remote_source), (__bridge void*)  handler);
+    g_signal_connect(media_session, "on-new-candidate", G_CALLBACK(got_candidate),(__bridge void*)   handler);
+    g_signal_connect(media_session, "on-candidate-gathering-done", G_CALLBACK(candidate_gathering_done),(__bridge void*)   handler);
+    g_signal_connect(media_session, "notify::dtls-certificate", G_CALLBACK(got_dtls_certificate), (__bridge void*)  handler);
 
-    media_sessions = g_object_get_data(G_OBJECT(transport_agent), "media-sessions");
+    media_sessions = g_object_get_data(G_OBJECT(handler->defs.transport_agent), "media-sessions");
     media_sessions = g_list_append(media_sessions, media_session);
-    g_object_set_data(G_OBJECT(transport_agent), "media-sessions", media_sessions);
+    g_object_set_data(G_OBJECT(handler->defs.transport_agent), "media-sessions", media_sessions);
     // This triggers local candidate gatehering.
-    owr_transport_agent_add_session(transport_agent, OWR_SESSION(media_session));
+    owr_transport_agent_add_session(handler->defs.transport_agent, OWR_SESSION(media_session));
 }
 
 

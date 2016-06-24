@@ -29,6 +29,8 @@
 #import <Foundation/Foundation.h>
 #import "OpenWebRTCVideoView.h"
 #import "OpenWebRTCSettings.h"
+#include "owr_transport_agent.h"
+#include "owr_video_renderer.h"
 
 @protocol OpenWebRTCNativeHandlerDelegate <NSObject>
 
@@ -45,11 +47,24 @@
 
 @end
 
-@interface OpenWebRTCNativeHandler : NSObject
+typedef struct WebRTCDefs_s {
+    OwrVideoRenderer *local_video_renderer;
+    OwrVideoRenderer *remote_video_renderer;
+    GList *local_sources, *renderers;
+    OwrTransportAgent *transport_agent;
+    bool is_answering;
+    bool is_offering;
+    
+} WebRTCDefs;
+
+@interface OpenWebRTCNativeHandler : NSObject {
+    WebRTCDefs defs;
+}
 
 @property (nonatomic, weak) id <OpenWebRTCNativeHandlerDelegate> delegate;
 @property (nonatomic, strong) OpenWebRTCSettings *settings;
 @property (nonatomic, strong) NSMutableArray *localSourceArray;
+@property (nonatomic, strong) NSString *viewTag;
 
 - (instancetype)initWithDelegate:(id <OpenWebRTCNativeHandlerDelegate>)delegate;
 
